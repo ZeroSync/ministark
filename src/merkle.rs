@@ -24,7 +24,7 @@ pub enum Error {
 }
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
-pub struct Proof(Vec<u8>);
+pub struct Proof(pub Vec<u8>);
 
 impl Proof {
     pub fn new<D: Digest>(merkle_path: Vec<Output<D>>) -> Self {

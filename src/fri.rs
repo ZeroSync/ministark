@@ -67,9 +67,9 @@ impl FriOptions {
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct FriProof<F: Field> {
-    layers: Vec<FriProofLayer<F>>,
-    remainder: Vec<F>,
-    remainder_commitment: Vec<u8>,
+    pub layers: Vec<FriProofLayer<F>>,
+    pub remainder: Vec<F>,
+    pub remainder_commitment: Vec<u8>,
 }
 
 impl<F: GpuField + Field> FriProof<F>
@@ -101,9 +101,9 @@ struct FriLayer<F: GpuField, D: Digest> {
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct FriProofLayer<F: Field> {
-    values: Vec<F>,
-    proofs: Vec<merkle::Proof>,
-    commitment: Vec<u8>,
+    pub values: Vec<F>,
+    pub proofs: Vec<merkle::Proof>,
+    pub commitment: Vec<u8>,
 }
 
 impl<F: GpuField + Field> FriProofLayer<F>
