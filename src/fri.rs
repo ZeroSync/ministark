@@ -73,10 +73,9 @@ impl FriOptions {
 }
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
-pub struct FriProof<F: Field> {
-    pub layers: Vec<FriProofLayer<F>>,
-    pub remainder: Vec<F>,
-    pub remainder_commitment: Vec<u8>,
+pub struct FriProof<F: Field, D: Digest, M: MatrixMerkleTree<F>> {
+    pub layers: Vec<LayerProof<F, D, M>>,
+    pub remainder_coeffs: Vec<F>,
 }
 
 impl<F: GpuField + Field, D: Digest, M: MatrixMerkleTree<F, Root = D>> FriProof<F, D, M>
@@ -97,10 +96,10 @@ struct FriLayer<F: GpuField, M: MerkleTree> {
 }
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
-pub struct FriProofLayer<F: Field> {
-    pub values: Vec<F>,
-    pub proofs: Vec<merkle::Proof>,
-    pub commitment: Vec<u8>,
+pub struct LayerProof<F: Field, D: Digest, M: MatrixMerkleTree<F>> {
+    pub flattenend_rows: Vec<F>,
+    pub merkle_proof: M::Proof,
+    pub commitment: D,
 }
 
 impl<F: GpuField + Field, D: Digest, M: MatrixMerkleTree<F, Root = D>> LayerProof<F, D, M>
