@@ -1,7 +1,10 @@
+use crate::hash::Digest;
 use alloc::vec::Vec;
+use ark_ff::BigInteger;
 use ark_ff::FftField;
 use ark_ff::Field;
 use ark_ff::One;
+use ark_ff::PrimeField;
 use ark_ff::Zero;
 use ark_poly::domain::Radix2EvaluationDomain;
 use ark_poly::EvaluationDomain;
@@ -21,6 +24,10 @@ use core::ptr::NonNull;
 use num_traits::Pow;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use std::fmt::Debug;
+use std::iter::zip;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 #[cfg(feature = "std")]
 pub struct Timer<'a> {
@@ -104,7 +111,7 @@ pub fn fill_vanishing_polynomial<F: FftField>(
         .enumerate()
         .for_each(|(i, chunk)| {
             let mut acc = scaled_eval_offset * scaled_eval_generator.pow([(i * chunk_size) as u64]);
-            for coeff in chunk.iter_mut() {
+            for coeff in chunk {
                 *coeff = acc - scaled_vanish_offset;
                 acc *= &scaled_eval_generator;
             }
@@ -123,20 +130,17 @@ pub fn horner_evaluate<F: Field, T: Field + for<'a> Add<&'a F, Output = T>>(
         .rfold(T::zero(), move |result, coeff| result * point + coeff)
 }
 
-/// Calculates `c * (P(X) - P(z)) / (x^a - z)` using synthetic division
+/// Calculates `c * (P(X) - P(z)) / (X - z)` using synthetic division
 /// <https://en.wikipedia.org/wiki/Synthetic_division>
-// code taken from OpenZKP
-pub fn divide_out_point_into<
-    Fp: Field,
-    Fq: Field + for<'a> AddAssign<&'a Fp> + for<'a> Mul<&'a Fp>,
->(
+// adapted from OpenZKP <https://github.com/0xProject/OpenZKP/blob/master/crypto/stark/src/polynomial.rs#L120>
+pub fn divide_out_point<Fp: Field, Fq: Field + for<'a> AddAssign<&'a Fp> + for<'a> Mul<&'a Fp>>(
     dst_coeffs: &mut [Fq],
     src_coeffs: &[Fp],
     z: &Fq,
     c: &Fq,
 ) {
     let mut remainder = Fq::zero();
-    for (coefficient, target) in src_coeffs.iter().rev().zip(dst_coeffs.iter_mut().rev()) {
+    for (coefficient, target) in zip(src_coeffs, dst_coeffs).rev() {
         // TODO: see if there is a perf difference using references
         *target += remainder * c;
         remainder *= z;
@@ -144,38 +148,37 @@ pub fn divide_out_point_into<
     }
 }
 
-// TODO: change name/add description
-const GRINDING_CONTRIBUTION_FLOOR: usize = 80;
-
-// taken from Winterfell
-// also https://github.com/starkware-libs/ethSTARK/blob/master/README.md#7-Measuring-Security
-// https://eprint.iacr.org/2020/654.pdf section 7.2 for proven security
-// TODO: must investigate and confirm all this.
-// TODO: determine if
-pub fn conjectured_security_level(
-    field_bits: usize,
-    hash_fn_security: usize,
-    lde_blowup_factor: usize,
-    trace_len: usize,
-    num_fri_quiries: usize,
-    grinding_factor: usize,
-) -> usize {
-    // compute max security we can get for a given field size
-    let field_security = field_bits - (lde_blowup_factor * trace_len).trailing_zeros() as usize;
-
-    // compute security we get by executing multiple query rounds
-    let security_per_query = lde_blowup_factor.ilog2() as usize;
-    let mut query_security = security_per_query * num_fri_quiries;
-
-    // include grinding factor contributions only for proofs adequate security
-    if query_security >= GRINDING_CONTRIBUTION_FLOOR {
-        query_security += grinding_factor;
+/// Calculates `c * (P(X) - P(z)) / (X - z)` using synthetic division
+/// <https://en.wikipedia.org/wiki/Synthetic_division>
+// adapted from OpenZKP <https://github.com/0xProject/OpenZKP/blob/master/crypto/stark/src/polynomial.rs#L120>
+pub fn divide_out_point_into<F: Field>(p_coeffs: &mut [F], z: &F, c: &F) {
+    let mut remainder = F::ZERO;
+    for coeff in p_coeffs.iter_mut().rev() {
+        let tmp = *coeff;
+        *coeff = remainder * c;
+        remainder = remainder * z + tmp;
     }
+}
 
-    core::cmp::min(
-        core::cmp::min(field_security, query_security) - 1,
-        hash_fn_security,
-    )
+/// Calculates `sum(c_i * (P(X) - P(z_i)) / (X - z_i)` using synthetic
+/// division <https://en.wikipedia.org/wiki/Synthetic_division>
+// adapted from OpenZKP <https://github.com/0xProject/OpenZKP/blob/master/crypto/stark/src/polynomial.rs#L120>
+pub fn divide_out_points_into<F: Field>(p_coeffs: &mut [F], zs: &[F], cs: &[F]) {
+    assert_eq!(zs.len(), cs.len());
+    let mut remainders = vec![F::ZERO; zs.len()];
+    for coeff in p_coeffs.iter_mut().rev() {
+        let tmp = *coeff;
+        // TODO: F::sum_of_products
+        *coeff = zip(&remainders, cs).map(|(r, &c)| c * r).sum();
+        zip(&mut remainders, zs).for_each(|(r, &z)| *r = z * *r + tmp);
+    }
+}
+
+pub fn field_bits<F: Field>() -> u32 {
+    let base_field_modulus = <F::BasePrimeField as PrimeField>::MODULUS;
+    let base_field_bits = base_field_modulus.num_bits();
+    let extension_field_degree = u32::try_from(F::extension_degree()).unwrap();
+    extension_field_degree * base_field_bits
 }
 
 // TODO: docs
@@ -442,16 +445,16 @@ pub struct GpuAllocator;
 
 unsafe impl Allocator for GpuAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        #[cfg(apple_silicon)]
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         return page_aligned_allocator::PageAlignedAllocator.allocate(layout);
-        #[cfg(not(apple_silicon))]
+        #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
         return ark_std::alloc::Global.allocate(layout);
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        #[cfg(apple_silicon)]
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         return page_aligned_allocator::PageAlignedAllocator.deallocate(ptr, layout);
-        #[cfg(not(apple_silicon))]
+        #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
         return ark_std::alloc::Global.deallocate(ptr, layout);
     }
 }
@@ -466,7 +469,7 @@ pub fn vec_to_gpu_vec<T>(v: Vec<T>) -> GpuVec<T> {
     unsafe { Vec::from_raw_parts_in(ptr, length, capacity, GpuAllocator) }
 }
 
-#[cfg(apple_silicon)]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 mod page_aligned_allocator {
     use alloc::alloc::Global;
     use core::alloc::AllocError;
@@ -486,6 +489,109 @@ mod page_aligned_allocator {
         unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
             Global.deallocate(ptr, layout.align_to(PAGE_SIZE).unwrap().pad_to_align());
         }
+    }
+}
+
+/// Wrapper around a digest to implement serialize and deserialize traits
+pub struct SerdeOutput<D: digest::Digest>(digest::Output<D>);
+
+impl<D: digest::Digest> Default for SerdeOutput<D> {
+    fn default() -> Self {
+        Self(digest::Output::<D>::default())
+    }
+}
+
+impl<D: digest::Digest> Digest for SerdeOutput<D> {
+    fn as_bytes(&self) -> [u8; 32] {
+        let mut res = [0; 32];
+        res.copy_from_slice(&self.0);
+        res
+    }
+}
+
+impl<D: digest::Digest> Eq for SerdeOutput<D> {}
+
+impl<D: digest::Digest> PartialEq for SerdeOutput<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<D: digest::Digest> Debug for SerdeOutput<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SerdeOutput").field(&self.0).finish()
+    }
+}
+
+impl<D: digest::Digest> From<SerdeOutput<D>> for digest::Output<D> {
+    #[inline]
+    fn from(value: SerdeOutput<D>) -> Self {
+        value.0
+    }
+}
+
+impl<D: digest::Digest> From<digest::Output<D>> for SerdeOutput<D> {
+    #[inline]
+    fn from(value: digest::Output<D>) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<D: digest::Digest> SerdeOutput<D> {
+    #[inline]
+    pub const fn new(hash: digest::Output<D>) -> Self {
+        Self(hash)
+    }
+}
+
+impl<D: digest::Digest> Clone for SerdeOutput<D> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<D: digest::Digest> CanonicalSerialize for SerdeOutput<D> {
+    fn serialize_with_mode<W: ark_serialize::Write>(
+        &self,
+        writer: W,
+        compress: ark_serialize::Compress,
+    ) -> Result<(), ark_serialize::SerializationError> {
+        self.0.serialize_with_mode(writer, compress)
+    }
+
+    fn serialized_size(&self, compress: ark_serialize::Compress) -> usize {
+        (*self.0).serialized_size(compress)
+    }
+}
+
+impl<D: digest::Digest> Valid for SerdeOutput<D> {
+    fn check(&self) -> Result<(), ark_serialize::SerializationError> {
+        Ok(())
+    }
+}
+
+impl<D: digest::Digest> CanonicalDeserialize for SerdeOutput<D> {
+    fn deserialize_with_mode<R: ark_serialize::Read>(
+        reader: R,
+        compress: ark_serialize::Compress,
+        validate: ark_serialize::Validate,
+    ) -> Result<Self, ark_serialize::SerializationError> {
+        let bytes = Vec::deserialize_with_mode(reader, compress, validate)?;
+        Ok(Self(digest::Output::<D>::from_iter(bytes)))
+    }
+}
+
+impl<D: digest::Digest> Deref for SerdeOutput<D> {
+    type Target = digest::Output<D>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<D: digest::Digest> DerefMut for SerdeOutput<D> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 

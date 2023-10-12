@@ -8,24 +8,35 @@ use ministark::air::AirConfig;
 use ministark::constraints::AlgebraicItem;
 use ministark::constraints::Constraint;
 use ministark::constraints::ExecutionTraceColumn;
+use ministark::hash::HashFn;
+use ministark::hash::Sha256HashFn;
 use ministark::hints::Hints;
+use ministark::merkle::MatrixMerkleTreeImpl;
+use ministark::random::PublicCoin;
+use ministark::random::PublicCoinImpl;
+use ministark::stark::Stark;
 use ministark::utils::FieldVariant;
 use ministark::utils::GpuAllocator;
+use ministark::utils::SerdeOutput;
 use ministark::Matrix;
 use ministark::ProofOptions;
-use ministark::Prover;
 use ministark::Trace;
 use ministark_gpu::fields::p18446744069414584321::ark::Fp;
 use num_traits::Pow;
+use sha2::Sha256;
 use std::time::Instant;
 
 struct FibTrace(Matrix<Fp>);
 
+impl FibTrace {
+    fn last_value(&self) -> Fp {
+        *(self.0).0[7].last().unwrap()
+    }
+}
+
 impl Trace for FibTrace {
     type Fp = Fp;
     type Fq = Fp;
-
-    const NUM_BASE_COLUMNS: usize = 8;
 
     fn len(&self) -> usize {
         self.0.num_rows()
@@ -43,7 +54,7 @@ enum FibHint {
 struct FibAirConfig;
 
 impl AirConfig for FibAirConfig {
-    const NUM_BASE_COLUMNS: usize = FibTrace::NUM_BASE_COLUMNS;
+    const NUM_BASE_COLUMNS: usize = 8;
     type Fp = Fp;
     type Fq = Fp;
     type PublicInputs = Fp;
@@ -132,25 +143,32 @@ impl AirConfig for FibAirConfig {
     }
 }
 
-struct FibProver(ProofOptions);
+struct FibClaim(Fp);
 
-impl Prover for FibProver {
+impl Stark for FibClaim {
     type Fp = Fp;
     type Fq = Fp;
     type AirConfig = FibAirConfig;
+    type Digest = SerdeOutput<Sha256>;
+    type PublicCoin = PublicCoinImpl<Fp, Sha256HashFn>;
+    type MerkleTree = MatrixMerkleTreeImpl<Sha256HashFn>;
+    type Witness = FibTrace;
     type Trace = FibTrace;
 
-    fn new(options: ProofOptions) -> Self {
-        FibProver(options)
-    }
-
-    fn options(&self) -> ProofOptions {
+    fn get_public_inputs(&self) -> <Self::AirConfig as AirConfig>::PublicInputs {
         self.0
     }
 
-    fn get_pub_inputs(&self, trace: &FibTrace) -> Fp {
-        // get the last item in the trace
-        *trace.0[7].last().unwrap()
+    fn generate_trace(&self, witness: FibTrace) -> Self::Trace {
+        witness
+    }
+
+    fn gen_public_coin(&self, air: &ministark::Air<Self::AirConfig>) -> Self::PublicCoin {
+        let mut seed = Vec::new();
+        air.public_inputs().serialize_compressed(&mut seed).unwrap();
+        air.trace_len().serialize_compressed(&mut seed).unwrap();
+        air.options().serialize_compressed(&mut seed).unwrap();
+        PublicCoinImpl::new(Sha256HashFn::hash_chunks([&*seed]))
     }
 }
 
@@ -203,19 +221,23 @@ fn gen_trace(n: usize) -> FibTrace {
     ]))
 }
 
+const SECURITY_LEVEL: u32 = 30;
+const OPTIONS: ProofOptions = ProofOptions::new(32, 4, 8, 8, 64);
+
 fn main() {
-    let options = ProofOptions::new(32, 4, 8, 8, 64);
-    let prover = FibProver::new(options);
     let now = Instant::now();
-    let trace = gen_trace(1048576 * 32);
+    let trace = gen_trace(1048576 * 16);
     println!("Trace generated in: {:?}", now.elapsed());
 
-    let now = Instant::now();
-    let proof = pollster::block_on(prover.generate_proof(trace)).unwrap();
-    println!("Proof generated in: {:?}", now.elapsed());
-    let mut proof_bytes = Vec::new();
-    proof.serialize_compressed(&mut proof_bytes).unwrap();
-    println!("Result: {:?}", proof_bytes.len());
+    let claim = FibClaim(trace.last_value());
 
-    proof.verify().unwrap();
+    let now = Instant::now();
+    let proof = pollster::block_on(claim.prove(OPTIONS, trace)).expect("prover failed");
+    println!("Proof generated in: {:?}", now.elapsed());
+
+    let now = Instant::now();
+    claim
+        .verify(proof, SECURITY_LEVEL)
+        .expect("verification failed");
+    println!("Proof generated in: {:?}", now.elapsed());
 }

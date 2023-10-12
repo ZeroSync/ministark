@@ -1,5 +1,5 @@
 use crate::constraints::ExecutionTraceColumn;
-use crate::merkle::MerkleTree;
+use crate::hash::ElementHashFn;
 use crate::utils::horner_evaluate;
 use crate::utils::GpuAllocator;
 use crate::utils::GpuVec;
@@ -11,16 +11,14 @@ use ark_ff::Field;
 use ark_poly::domain::DomainCoeff;
 use ark_poly::domain::Radix2EvaluationDomain;
 use ark_poly::EvaluationDomain;
-use ark_serialize::CanonicalSerialize;
 use core::cmp::Ordering;
 use core::ops::Add;
 use core::ops::Deref;
 use core::ops::DerefMut;
 use core::ops::Index;
 use core::ops::IndexMut;
-use digest::generic_array::GenericArray;
-use digest::Digest;
 use ministark_gpu::prelude::*;
+use ministark_gpu::utils::bit_reverse;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -43,6 +41,22 @@ impl<F: Field> Matrix<F> {
             debug_assert_eq!(row.len(), num_cols);
             for (col, value) in cols.iter_mut().zip(row) {
                 col.push(value);
+            }
+        }
+        Self::new(cols)
+    }
+
+    /// Creates a matrix from row-major list of arrays
+    pub fn from_arrays<const NUM_COLS: usize>(rows: &[[F; NUM_COLS]]) -> Self {
+        let num_rows = rows.len();
+        let num_cols = NUM_COLS;
+        let mut cols = (0..num_cols)
+            .map(|_| Vec::with_capacity_in(num_rows, GpuAllocator))
+            .collect::<Vec<GpuVec<F>>>();
+        // TODO: parallelise
+        for row in rows {
+            for (col, value) in cols.iter_mut().zip(row) {
+                col.push(*value);
             }
         }
         Self::new(cols)
@@ -109,9 +123,9 @@ impl<F: Field> Matrix<F> {
     {
         use crate::utils::gpu_vec_to_vec;
         use crate::utils::vec_to_gpu_vec;
+        use ark_std::cfg_into_iter;
         Self(
-            self.0
-                .into_iter()
+            cfg_into_iter!(self.0)
                 .map(|column| {
                     // TODO: a little messy. arkworks only takes a Vec with global allocator. To
                     // prevent cloning the memory we have to reconstruct a Vec from a GpuVec and
@@ -156,13 +170,17 @@ impl<F: Field> Matrix<F> {
     {
         use crate::utils::gpu_vec_to_vec;
         use crate::utils::vec_to_gpu_vec;
+        use ark_std::cfg_into_iter;
         Self(
-            self.0
-                .into_iter()
+            cfg_into_iter!(self.0)
                 .map(|column| {
                     // TODO: a little messy. arkworks only takes a Vec with global allocator. To
                     // prevent cloning the memory we have to reconstruct a Vec from a GpuVec and
                     // convert it back to a GpuVec after the fft
+                    // NOTE: not really a safe operation anyway. Domain could be larger than the
+                    // original vector resulting an a resize and potential reallocation of the
+                    // underlying memory. This wouldn't necessarily be page aligned (what gpu vec
+                    // enforces) so it'll be unsafe to use for GPU.
                     let mut column = gpu_vec_to_vec(column);
                     domain.fft_in_place(&mut column);
                     vec_to_gpu_vec(column)
@@ -204,6 +222,17 @@ impl<F: Field> Matrix<F> {
         return self.into_evaluations_gpu(domain);
     }
 
+    pub fn into_bit_reversed_evaluations(self, domain: Radix2EvaluationDomain<F::FftField>) -> Self
+    where
+        F: GpuField + DomainCoeff<F::FftField>,
+        F::FftField: FftField,
+    {
+        let mut evaluations = self.into_evaluations(domain);
+        // TODO: remove this and just do regular in-order->out-of-order CT FFT
+        evaluations.bit_reverse_rows();
+        evaluations
+    }
+
     /// Evaluates the columns of the matrix
     pub fn evaluate(&self, domain: Radix2EvaluationDomain<F::FftField>) -> Self
     where
@@ -213,10 +242,18 @@ impl<F: Field> Matrix<F> {
         self.clone().into_evaluations(domain)
     }
 
-    pub fn commit_to_rows<D: Digest>(&self) -> MerkleTree<D> {
-        let num_rows = self.num_rows();
+    pub fn bit_reversed_evaluate(&self, domain: Radix2EvaluationDomain<F::FftField>) -> Self
+    where
+        F: GpuField + DomainCoeff<F::FftField>,
+        F::FftField: FftField,
+    {
+        self.clone().into_bit_reversed_evaluations(domain)
+    }
 
-        let mut row_hashes = vec![GenericArray::default(); num_rows];
+    // TODO: remove
+    pub fn hash_rows<H: ElementHashFn<F>>(&self) -> Vec<H::Digest> {
+        let num_rows = self.num_rows();
+        let mut row_hashes = vec![H::Digest::default(); num_rows];
 
         #[cfg(not(feature = "parallel"))]
         let chunk_size = row_hashes.len();
@@ -232,17 +269,14 @@ impl<F: Field> Matrix<F> {
                 let offset = chunk_size * chunk_offset;
 
                 let mut row_buffer = vec![F::zero(); self.num_cols()];
-                let mut row_bytes = Vec::with_capacity(row_buffer.compressed_size());
 
                 for (i, row_hash) in chunk.iter_mut().enumerate() {
-                    row_bytes.clear();
                     self.read_row(offset + i, &mut row_buffer);
-                    row_buffer.serialize_compressed(&mut row_bytes).unwrap();
-                    *row_hash = D::new_with_prefix(&row_bytes).finalize();
+                    *row_hash = H::hash_elements(row_buffer.iter().copied());
                 }
             });
 
-        MerkleTree::new(row_hashes).expect("failed to construct Merkle tree")
+        row_hashes
     }
 
     pub fn evaluate_at<T: Field + for<'a> Add<&'a F, Output = T>>(&self, x: T) -> Vec<T> {
@@ -259,7 +293,7 @@ impl<F: Field> Matrix<F> {
         }
     }
 
-    fn read_row(&self, row_idx: usize, row: &mut [F]) {
+    pub fn read_row(&self, row_idx: usize, row: &mut [F]) {
         for (column, value) in self.0.iter().zip(row) {
             *value = column[row_idx];
         }
@@ -313,6 +347,10 @@ impl<F: Field> Matrix<F> {
         }
 
         Self::new(vec![accumulator])
+    }
+
+    pub fn bit_reverse_rows(&mut self) {
+        ark_std::cfg_iter_mut!(self.0).for_each(|col| bit_reverse(col));
     }
 
     #[cfg(feature = "gpu")]

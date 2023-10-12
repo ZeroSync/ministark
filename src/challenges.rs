@@ -1,16 +1,17 @@
 use crate::constraints::VerifierChallenge;
 use alloc::vec::Vec;
 use ark_ff::Field;
-use ark_std::rand::Rng;
+use ark_serialize::CanonicalDeserialize;
+use ark_serialize::CanonicalSerialize;
 use core::ops::Deref;
 use core::ops::Index;
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug, CanonicalDeserialize, CanonicalSerialize)]
 pub struct Challenges<F: Field>(Vec<F>);
 
 impl<F: Field> Challenges<F> {
-    pub fn new<R: Rng + ?Sized>(rng: &mut R, num_challenges: usize) -> Self {
-        Self((0..num_challenges).map(|_| F::rand(rng)).collect())
+    pub fn new(challenges: Vec<F>) -> Self {
+        Self(challenges)
     }
 }
 

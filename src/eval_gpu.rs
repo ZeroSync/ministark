@@ -109,6 +109,9 @@ pub fn eval<Fp: GpuFftField<FftField = Fp> + FftField, Fq: StarkExtensionOf<Fp>>
             };
             EvaluationItem::new_lde(&lde_calculator, &lde_cache, command_buffer, lde, j * step)
         }
+        &Periodic(_col) => {
+            todo!()
+        }
         X => {
             // generate an LDE for the only X (we called reuse_shared_nodes)
             let mut x_lde = Option::take(&mut x_lde).unwrap();
@@ -325,7 +328,9 @@ impl<'a, Fp: Field + GpuField, Fq: Field + GpuField> EvaluationItem<'a, Fp, Fq> 
                             EvaluationVariant::Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(b) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(b) = dst.as_ref() else {
+                                panic!()
+                            };
                             inverse_into_fp.encode(command_buffer, &b.1, &a.1);
                             EvaluationVariant::Lde(dst, offset)
                         }
@@ -389,14 +394,18 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_const_fp.encode(command_buffer, &c.1, &a.1, b);
                             Lde(dst, offset)
                         }
                     }
                     (FieldVariant::Fp(a), FieldVariant::Fq(b)) => {
                         let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                        let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                        let FieldVariant::Fq(c) = dst.as_ref() else {
+                            panic!()
+                        };
                         convert_fp_into_fq.encode(command_buffer, &c.1, &a.1);
                         add_assign_const_fq.encode(command_buffer, &c.1, &b);
                         Lde(dst, offset)
@@ -407,7 +416,9 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_const_fq_fp.encode(command_buffer, &c.1, &a.1, b);
                             Lde(dst, offset)
                         }
@@ -418,7 +429,9 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_const_fq.encode(command_buffer, &c.1, &a.1, b);
                             Lde(dst, offset)
                         }
@@ -444,7 +457,9 @@ impl<
                         } else {
                             let offset_diff = rhs_offset - lhs_offset;
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_fq.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -461,7 +476,9 @@ impl<
                         } else {
                             let offset_diff = rhs_offset - lhs_offset;
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_fp.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -473,7 +490,9 @@ impl<
                             Lde(rhs, lhs_offset - offset_diff)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_fq_fp.encode(command_buffer, &c.1, &b.1, &a.1, offset_diff);
                             Lde(dst, lhs_offset - offset_diff)
                         }
@@ -485,7 +504,9 @@ impl<
                             Lde(lhs, rhs_offset - offset_diff)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             add_into_fq_fp.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -546,14 +567,18 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_const_fp.encode(command_buffer, &c.1, &a.1, &b);
                             Lde(dst, offset)
                         }
                     }
                     (FieldVariant::Fp(a), FieldVariant::Fq(b)) => {
                         let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                        let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                        let FieldVariant::Fq(c) = dst.as_ref() else {
+                            panic!()
+                        };
                         convert_fp_into_fq.encode(command_buffer, &c.1, &a.1);
                         mul_assign_const_fq.encode(command_buffer, &c.1, b);
                         Lde(dst, offset)
@@ -564,7 +589,9 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_const_fq_fp.encode(command_buffer, &c.1, &a.1, &b);
                             Lde(dst, offset)
                         }
@@ -575,7 +602,9 @@ impl<
                             Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_const_fq.encode(command_buffer, &c.1, &a.1, &b);
                             Lde(dst, offset)
                         }
@@ -601,7 +630,9 @@ impl<
                         } else {
                             let offset_diff = rhs_offset - lhs_offset;
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_fq.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -618,7 +649,9 @@ impl<
                         } else {
                             let offset_diff = rhs_offset - lhs_offset;
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_fp.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -631,7 +664,9 @@ impl<
                         } else {
                             // TODO::
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_fq_fp.encode(command_buffer, &c.1, &b.1, &a.1, offset_diff);
                             Lde(dst, lhs_offset - offset_diff)
                         }
@@ -643,7 +678,9 @@ impl<
                             Lde(lhs, rhs_offset - offset_diff)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(c) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(c) = dst.as_ref() else {
+                                panic!()
+                            };
                             mul_into_fq_fp.encode(command_buffer, &c.1, &a.1, &b.1, offset_diff);
                             Lde(dst, rhs_offset - offset_diff)
                         }
@@ -704,7 +741,9 @@ impl<'a, Fp: Field + GpuField, Fq: Field + GpuField> Pow<usize> for EvaluationIt
                             EvaluationVariant::Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(b) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(b) = dst.as_ref() else {
+                                panic!()
+                            };
                             exp_into_fp.encode(command_buffer, &b.1, &a.1, rhs);
                             EvaluationVariant::Lde(dst, offset)
                         }
@@ -715,7 +754,9 @@ impl<'a, Fp: Field + GpuField, Fq: Field + GpuField> Pow<usize> for EvaluationIt
                             EvaluationVariant::Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(b) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(b) = dst.as_ref() else {
+                                panic!()
+                            };
                             exp_into_fq.encode(command_buffer, &b.1, &a.1, rhs);
                             EvaluationVariant::Lde(dst, offset)
                         }
@@ -760,7 +801,9 @@ impl<'a, Fp: Field + GpuField, Fq: Field + GpuField> Neg for EvaluationItem<'a, 
                             EvaluationVariant::Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fp);
-                            let FieldVariant::Fp(b) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fp(b) = dst.as_ref() else {
+                                panic!()
+                            };
                             neg_into_fp.encode(command_buffer, &b.1, &a.1);
                             EvaluationVariant::Lde(dst, offset)
                         }
@@ -771,7 +814,9 @@ impl<'a, Fp: Field + GpuField, Fq: Field + GpuField> Neg for EvaluationItem<'a, 
                             EvaluationVariant::Lde(lde, offset)
                         } else {
                             let dst = cache.borrow_mut().get_buffer(FieldType::Fq);
-                            let FieldVariant::Fq(b) = dst.as_ref() else { panic!() };
+                            let FieldVariant::Fq(b) = dst.as_ref() else {
+                                panic!()
+                            };
                             neg_into_fq.encode(command_buffer, &b.1, &a.1);
                             EvaluationVariant::Lde(dst, offset)
                         }

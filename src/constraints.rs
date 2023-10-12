@@ -3,7 +3,6 @@ use crate::utils;
 use alloc::collections::BTreeSet;
 use ark_ff::One;
 use ark_ff::Zero;
-use core::borrow::Borrow;
 use core::iter::Product;
 use core::iter::Sum;
 use core::ops::Add;
@@ -14,15 +13,32 @@ use core::ops::Mul;
 use core::ops::Neg;
 use core::ops::Sub;
 use num_traits::Pow;
+use std::fmt::Debug;
+use std::hash::Hash;
 
 // TODO: should really remove copy as this type might change in the future
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum AlgebraicItem<T> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub enum AlgebraicItem<T: 'static> {
     X,
     Constant(T),
     Challenge(usize),
+    Periodic(PeriodicColumn<'static, T>),
     Hint(usize),
     Trace(/* =column */ usize, /* =offset */ isize),
+}
+
+impl<T> AlgebraicItem<T> {
+    // Returns an upper bound on the item's degree in `x`
+    const fn degree(&self, trace_degree: usize) -> Degree {
+        use AlgebraicItem::*;
+        match &self {
+            // TODO: handle implications of a zero?
+            Constant(_) | Challenge(_) | Hint(_) => Degree(0, 0),
+            Trace(_, _) => Degree(trace_degree, 0),
+            Periodic(col) => col.degree(trace_degree),
+            X => Degree(1, 0),
+        }
+    }
 }
 
 impl<T: Zero> Sum<Self> for Expr<AlgebraicItem<T>> {
@@ -86,8 +102,47 @@ forward_ref_binop!(impl< T: Clone > Div, div for AlgebraicItem<T>, AlgebraicItem
 forward_ref_binop!(impl< T: Clone > Add, add for AlgebraicItem<T>, AlgebraicItem<T>);
 forward_ref_binop!(impl< T: Clone > Sub, sub for AlgebraicItem<T>, AlgebraicItem<T>);
 
+/// A periodic column that repeats itself every `interval_size` many rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeriodicColumn<'a, T> {
+    coeffs: &'a [T],
+    interval_size: usize,
+}
+
+impl<'a, T> PeriodicColumn<'a, T> {
+    /// # Panics
+    /// Panics if the number of coefficients or the
+    /// interval size is not a power of two.
+    pub const fn new(coeffs: &'a [T], interval_size: usize) -> Self {
+        assert!(coeffs.len().is_power_of_two());
+        assert!(interval_size.is_power_of_two());
+        assert!(coeffs.len() <= interval_size);
+        Self {
+            coeffs,
+            interval_size,
+        }
+    }
+
+    pub const fn interval_size(&self) -> usize {
+        self.interval_size
+    }
+
+    pub const fn coeffs(&self) -> &'a [T] {
+        self.coeffs
+    }
+
+    /// Returns an upper bound on the preiodic column's degree in `x`
+    const fn degree(&self, trace_degree: usize) -> Degree {
+        let trace_len = trace_degree + 1;
+        assert!(trace_len.is_power_of_two());
+        let poly_degree = self.coeffs.len() - 1;
+        let num_intervals = trace_len / self.interval_size;
+        Degree(poly_degree * num_intervals, 0)
+    }
+}
+
 #[derive(Clone)]
-pub struct Constraint<T>(pub Expr<AlgebraicItem<T>>);
+pub struct Constraint<T: 'static>(Expr<AlgebraicItem<T>>);
 
 impl<T> Constraint<T> {
     pub const fn new(expression: Expr<AlgebraicItem<T>>) -> Self {
@@ -97,68 +152,17 @@ impl<T> Constraint<T> {
     /// Calculates an upper bound on the degree in X.
     /// Output is of the form `(numerator_degree, denominator_degree)`
     pub fn degree(&self, trace_degree: usize) -> (usize, usize) {
-        /// Degree of the form `(numerator_degree, denominator_degree)`
-        pub struct Degree(pub usize, pub usize);
-
-        impl Neg for Degree {
-            type Output = Self;
-
-            fn neg(self) -> Self::Output {
-                self
-            }
-        }
-
-        impl Add for Degree {
-            type Output = Self;
-
-            fn add(self, rhs: Self) -> Self::Output {
-                let Self(an, ad) = self;
-                let Self(bn, bd) = rhs;
-                Self((an + bd).max(bn + ad), ad + bd)
-            }
-        }
-
-        impl Div for Degree {
-            type Output = Self;
-
-            fn div(self, rhs: Self) -> Self::Output {
-                let Self(an, ad) = self;
-                let Self(bn, bd) = rhs;
-                Self(an + bd, ad + bn)
-            }
-        }
-
-        impl Mul for Degree {
-            type Output = Self;
-
-            fn mul(self, rhs: Self) -> Self::Output {
-                let Self(an, ad) = self;
-                let Self(bn, bd) = rhs;
-                Self(an + bn, ad + bd)
-            }
-        }
-
-        impl Pow<usize> for Degree {
-            type Output = Self;
-
-            fn pow(self, rhs: usize) -> Self::Output {
-                let Self(n, d) = self;
-                Self(n * rhs, d * rhs)
-            }
-        }
-
-        use AlgebraicItem::*;
-        let Degree(numerator_degree, denominator_degree) = self.0.eval(
-            // map the leaf nodes to their corresponding degree
-            &mut |leaf| match leaf {
-                // TODO: handle implications of a zero?
-                Constant(_) | Challenge(_) | Hint(_) => Degree(0, 0),
-                Trace(_, _) => Degree(trace_degree, 0),
-                X => Degree(1, 0),
-            },
-        );
-
+        let Degree(numerator_degree, denominator_degree) =
+            self.0.eval(&mut |leaf| leaf.degree(trace_degree));
         (numerator_degree, denominator_degree)
+    }
+
+    /// Returns the power-of-2 degree blowup observed by evaluating constraints
+    /// over the trace polynomials.
+    pub fn blowup_factor(&self, trace_len: usize) -> usize {
+        let trace_degree = trace_len - 1;
+        let (numerator_degree, denominator_degree) = self.degree(trace_degree);
+        blowup_factor(numerator_degree, denominator_degree, trace_degree)
     }
 
     /// Returns the evaluation result if the numerator is 0 when the denominator
@@ -262,7 +266,7 @@ impl<T> From<Expr<AlgebraicItem<T>>> for Constraint<T> {
     }
 }
 
-impl<T> Deref for Constraint<T> {
+impl<T: 'static> Deref for Constraint<T> {
     type Target = Expr<AlgebraicItem<T>>;
 
     fn deref(&self) -> &Self::Target {
@@ -276,10 +280,20 @@ impl<T> DerefMut for Constraint<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum CompositionItem<T> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub enum CompositionItem<T: 'static> {
     Item(AlgebraicItem<T>),
     CompositionCoeff(usize),
+}
+
+impl<T> CompositionItem<T> {
+    // Returns the item's corresponding degree
+    const fn degree(&self, trace_degree: usize) -> Degree {
+        match &self {
+            Self::Item(item) => item.degree(trace_degree),
+            Self::CompositionCoeff(_) => Degree(0, 0),
+        }
+    }
 }
 
 impl<T: Zero> Sum<Self> for Expr<CompositionItem<T>> {
@@ -289,48 +303,27 @@ impl<T: Zero> Sum<Self> for Expr<CompositionItem<T>> {
     }
 }
 
-#[derive(Clone)]
-pub struct CompositionConstraint<T> {
-    ce_blowup_factor: usize,
-    expr: Expr<CompositionItem<T>>,
-}
+pub struct CompositionConstraint<T: 'static>(Expr<CompositionItem<T>>);
 
-impl<T: Clone + Copy + Zero + Ord> CompositionConstraint<T> {
-    /// Combines multiple constraints into a single constraint (the composition
-    /// constraint). Constraints are composed with verifiers randomness.
-    /// This verifier randomness is expressed symbolically.
-    /// <https://medium.com/starkware/starkdex-deep-dive-the-stark-core-engine-497942d0f0ab>
-    pub fn new(constraints: &[Constraint<T>], trace_len: usize) -> Self {
-        let ce_blowup_factor = ce_blowup_factor(constraints, trace_len);
-        let composition_degree = trace_len * ce_blowup_factor - 1;
-        let trace_degree = trace_len - 1;
-        let x = Expr::Leaf(CompositionItem::Item(AlgebraicItem::X));
-        let mut composition_coeff = (0..).map(|i| Expr::Leaf(CompositionItem::CompositionCoeff(i)));
-        let expr = constraints
-            .iter()
-            .map(|constraint| {
-                let (numerator_degree, denominator_degree) = constraint.degree(trace_degree);
-                let evaluation_degree = numerator_degree - denominator_degree;
-                assert!(evaluation_degree <= composition_degree);
-                let degree_adjustment = composition_degree - evaluation_degree;
-                // TODO: if degree_adjustment is 0 then we only need one challenge
-                let constraint = constraint.map_leaves(&mut |&leaf| CompositionItem::Item(leaf));
-                let alpha = composition_coeff.next().unwrap();
-                let beta = composition_coeff.next().unwrap();
-                &constraint * (x.clone().pow(degree_adjustment) * alpha + beta)
-            })
-            .sum::<Expr<CompositionItem<T>>>()
-            .reuse_shared_nodes();
-        Self {
-            ce_blowup_factor,
-            expr,
-        }
+impl<T: Clone + Copy + Zero + Ord + Hash> CompositionConstraint<T> {
+    pub const fn new(expression: Expr<CompositionItem<T>>) -> Self {
+        Self(expression)
+    }
+
+    /// Calculates an upper bound on the degree in X.
+    /// Output is of the form `(numerator_degree, denominator_degree)`
+    pub fn degree(&self, trace_degree: usize) -> (usize, usize) {
+        let Degree(numerator_degree, denominator_degree) =
+            self.0.eval(&mut |leaf| leaf.degree(trace_degree));
+        (numerator_degree, denominator_degree)
     }
 
     /// Returns the power-of-2 degree blowup observed by evaluating constraints
     /// over the trace polynomials.
-    pub const fn ce_blowup_factor(&self) -> usize {
-        self.ce_blowup_factor
+    pub fn blowup_factor(&self, trace_len: usize) -> usize {
+        let trace_degree = trace_len - 1;
+        let (numerator_degree, denominator_degree) = self.degree(trace_degree);
+        blowup_factor(numerator_degree, denominator_degree, trace_degree)
     }
 }
 
@@ -338,26 +331,19 @@ impl<T> Deref for CompositionConstraint<T> {
     type Target = Expr<CompositionItem<T>>;
 
     fn deref(&self) -> &Self::Target {
-        &self.expr
+        &self.0
     }
 }
 
-/// Constraint evaluation blowup factor
-fn ce_blowup_factor<T>(constraints: &[Constraint<T>], trace_len: usize) -> usize {
-    assert!(trace_len.is_power_of_two());
-    let trace_degree = trace_len - 1;
-    utils::ceil_power_of_two(
-        constraints
-            .iter()
-            .map(|constraint| {
-                let (numerator_degree, denominator_degree) =
-                    constraint.borrow().degree(trace_degree);
-                numerator_degree.saturating_sub(denominator_degree)
-            })
-            .max()
-            // TODO: ceil_power_of_two might not be correct here. check the math
-            .map_or(0, |degree| utils::ceil_power_of_two(degree) / trace_degree),
-    )
+/// Returns the power-of-2 degree blowup observed by evaluating constraints
+/// over the trace polynomials.
+const fn blowup_factor(
+    numerator_degree: usize,
+    denominator_degree: usize,
+    trace_degree: usize,
+) -> usize {
+    let degree = numerator_degree.saturating_sub(denominator_degree);
+    utils::ceil_power_of_two(degree) / trace_degree
 }
 
 pub trait Hint {
@@ -415,5 +401,55 @@ pub trait ExecutionTraceColumn {
 impl ExecutionTraceColumn for usize {
     fn index(&self) -> usize {
         *self
+    }
+}
+
+/// Degree of the form `(numerator_degree, denominator_degree)`
+struct Degree(pub usize, pub usize);
+
+impl Neg for Degree {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        self
+    }
+}
+
+impl Add for Degree {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let Self(an, ad) = self;
+        let Self(bn, bd) = rhs;
+        Self((an + bd).max(bn + ad), ad + bd)
+    }
+}
+
+impl Div for Degree {
+    type Output = Self;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        let Self(an, ad) = self;
+        let Self(bn, bd) = rhs;
+        Self(an + bd, ad + bn)
+    }
+}
+
+impl Mul for Degree {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        let Self(an, ad) = self;
+        let Self(bn, bd) = rhs;
+        Self(an + bn, ad + bd)
+    }
+}
+
+impl Pow<usize> for Degree {
+    type Output = Self;
+
+    fn pow(self, rhs: usize) -> Self::Output {
+        let Self(n, d) = self;
+        Self(n * rhs, d * rhs)
     }
 }
